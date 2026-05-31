@@ -3,6 +3,7 @@ module.exports = {
   attachmentTimeout: 30000,
   maxAttachmentSize: 25 * 1024 * 1024,
   progressUpdateInterval: 10000,
+  avatarSize: 64,
   uploadRetries: 2,
   uploadRetryDelay: 5000,
   uploadToken: process.env.UPLOAD_TOKEN || '',

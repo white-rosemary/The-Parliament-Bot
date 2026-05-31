@@ -9,6 +9,7 @@ function serializeMessage(msg) {
       discriminator: msg.author.discriminator,
       bot: msg.author.bot,
       avatar: msg.author.avatar,
+      avatarFile: `avatars/${msg.author.id}.png`,
       nickname: msg.member?.nickname ?? null,
     },
     content: msg.content,
@@ -36,17 +37,18 @@ function serializeMessage(msg) {
   };
 }
 
-async function fetchAllMessages(channel, onBatch) {
+async function fetchAllMessages(channel, onBatch, options = {}) {
   let lastId = null;
   let totalFetched = 0;
+  const { avatarCollector } = options;
 
   while (true) {
-    const options = { limit: 100 };
-    if (lastId) options.before = lastId;
+    const fetchOptions = { limit: 100 };
+    if (lastId) fetchOptions.before = lastId;
 
     let messages;
     try {
-      messages = await channel.messages.fetch(options);
+      messages = await channel.messages.fetch(fetchOptions);
     } catch (err) {
       if (err.status === 429) {
         const retryAfter = err.retryAfter || 5000;
@@ -58,7 +60,14 @@ async function fetchAllMessages(channel, onBatch) {
 
     if (messages.size === 0) break;
 
-    const batch = [...messages.values()].map(serializeMessage);
+    const rawMessages = [...messages.values()];
+    if (avatarCollector) {
+      for (const msg of rawMessages) {
+        avatarCollector.collect(msg.author);
+      }
+    }
+
+    const batch = rawMessages.map(serializeMessage);
     totalFetched += batch.length;
 
     if (onBatch) await onBatch(batch, totalFetched);

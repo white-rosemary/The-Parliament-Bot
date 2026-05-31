@@ -4,9 +4,11 @@ const { fetchChannelMetadata, fetchChannelPermissions } = require('../fetchers/c
 const { fetchAllMessages } = require('../fetchers/messageFetcher');
 const { fetchThreads } = require('../fetchers/threadFetcher');
 const { streamAttachmentToArchive } = require('../fetchers/attachmentFetcher');
+const { AvatarCollector, appendAvatarsToArchive } = require('../fetchers/avatarFetcher');
 const { createDiskArchive } = require('./archiver');
 const { uploadFile } = require('./uploader');
 const { cleanupFile } = require('../utils/cleanup');
+const config = require('../config');
 
 const TEXT_CHANNEL_TYPES = new Set([
   ChannelType.GuildText,
@@ -45,8 +47,10 @@ async function runBackup({ type, target, destination, guild, reporter }) {
 
   let totalMessages = 0;
   let totalAttachments = 0;
+  let totalAvatars = 0;
   const errors = [];
   const manifest = [];
+  const avatarCollector = new AvatarCollector();
 
   await reporter.update({ phase: '正在写入服务器信息' });
   await uploadSingleArchive(
@@ -92,7 +96,7 @@ async function runBackup({ type, target, destination, guild, reporter }) {
 
       let tempFilePath;
       try {
-        const result = await packChannel(ch, backupId, async (stats) => {
+        const result = await packChannel(ch, backupId, avatarCollector, async (stats) => {
           partMessages += stats.messages || 0;
           partAttachments += stats.attachments || 0;
           totalMessages += stats.messages || 0;
@@ -126,6 +130,23 @@ async function runBackup({ type, target, destination, guild, reporter }) {
     await reporter.update({ processedChannels: i + 1 });
   }
 
+  await reporter.update({ phase: '正在写入用户头像' });
+  await uploadSingleArchive(
+    backupId,
+    `${baseUrl}/avatars`,
+    async (archive) => {
+      totalAvatars = await appendAvatarsToArchive(archive, avatarCollector, errors);
+    },
+  );
+  manifest.push({
+    id: 'avatars',
+    type: 'avatars',
+    path: 'avatars.zip',
+    imageSize: config.avatarSize,
+    users: avatarCollector.size,
+    saved: totalAvatars,
+  });
+
   await reporter.update({ phase: '正在上传备份清单' });
   await uploadSingleArchive(
     backupId,
@@ -140,6 +161,7 @@ async function runBackup({ type, target, destination, guild, reporter }) {
           parts: manifest,
           totalMessages,
           totalAttachments,
+          totalAvatars,
           errors,
         }, null, 2),
         { name: 'manifest.json' },
@@ -152,12 +174,13 @@ async function runBackup({ type, target, destination, guild, reporter }) {
     channels: channels.length,
     messages: totalMessages,
     attachments: totalAttachments,
+    avatars: totalAvatars,
     duration,
     errors: errors.length,
   });
 }
 
-async function packChannel(ch, backupId, onProgress, errors) {
+async function packChannel(ch, backupId, avatarCollector, onProgress, errors) {
   const { archive, tempFilePath, finalize } = await createDiskArchive(`${backupId}_${ch.id}`);
 
   try {
@@ -189,7 +212,7 @@ async function packChannel(ch, backupId, onProgress, errors) {
             firstBatch = false;
           }
           await onProgress({ messages: batch.length, attachments: 0 });
-        });
+        }, { avatarCollector });
       } catch (err) {
         errors.push(`抓取消息失败 [${ch.name}]: ${err.message}`);
       }
@@ -220,7 +243,7 @@ async function packChannel(ch, backupId, onProgress, errors) {
 async function uploadSingleArchive(backupId, url, populateFn) {
   const { archive, tempFilePath, finalize } = await createDiskArchive(backupId);
   try {
-    populateFn(archive);
+    await populateFn(archive);
     await finalize();
     await uploadFile(tempFilePath, url);
   } finally {
